@@ -1,0 +1,21 @@
+# Build directory
+build/
+
+# Compiled output
+*.o
+*.out
+
+# Temporary files
+temp*
+*.tmp
+
+# Log files
+*.log
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
