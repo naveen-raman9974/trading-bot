@@ -7,6 +7,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # ---- Find dependencies ----
 find_package(Boost REQUIRED)
 find_package(OpenSSL REQUIRED)
+find_package(spdlog REQUIRED)
 
 # ---- Executable ----
 add_executable(bot
@@ -28,4 +29,5 @@ target_link_libraries(bot
     Boost::boost
     OpenSSL::SSL
     OpenSSL::Crypto
+    spdlog::spdlog
 )

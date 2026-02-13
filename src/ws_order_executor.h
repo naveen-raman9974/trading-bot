@@ -18,6 +18,7 @@ public:
 
     void place_order(double price, double quantity) override;
     bool is_logged_in() const { return logged_in_; }
+    void request_stop() { stop_requested_.store(true, std::memory_order_release); }
 
 private:
     void connect();
@@ -34,6 +35,7 @@ private:
 
     std::thread reader_;
     std::atomic<bool> logged_in_{false};
+    std::atomic<bool> stop_requested_{false};
     
     std::mutex ws_mtx_; 
     std::mutex mtx_;

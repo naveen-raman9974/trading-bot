@@ -1,8 +1,8 @@
 {
   "symbol": "BTC_USDT",
-  "quantity": 0.0001,
-  "order_mode": "WS",
-  "api_key": "f9c578b83395df8498d6906ef4eb814b",
-  "api_secret": "640251b512c50d68e168982119321fc3ac00e43ce5a89befd90ad3c1e68926a5",
+  "quantity": 0.0002,
+  "order_mode": "REST",
+  "api_key": "",
+  "api_secret": "",
   "settle": "usdt"
 }

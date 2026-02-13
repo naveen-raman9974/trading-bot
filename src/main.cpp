@@ -1,8 +1,10 @@
-#include <iostream>
 #include <thread>
 #include <atomic>
 #include <chrono>
 #include <memory>
+#include <csignal>
+
+#include <spdlog/spdlog.h>
 
 #include "config.h"
 #include "ws_market_client.h"
@@ -10,11 +12,20 @@
 #include "rest_order_executor.h"
 #include "ws_order_executor.h"
 
+// Global shutdown flag
+std::atomic<bool> g_shutdown{false};
+
+// Signal handler
+void signal_handler(int signal) {
+    spdlog::info("Received signal {}, initiating shutdown...", signal);
+    g_shutdown.store(true, std::memory_order_release);
+}
+
 // Market data handler
 class BookTickerHandler {
 public:
-    BookTickerHandler(double& pending_price,
-                      double& last_sent_price,
+    BookTickerHandler(std::atomic<double>& pending_price,
+                      std::atomic<double>& last_sent_price,
                       std::atomic<bool>& order_pending)
         : pending_price_(pending_price),
           last_sent_price_(last_sent_price),
@@ -22,20 +33,25 @@ public:
     {}
 
     void operator()(const BookTicker& bt) {
+        if (g_shutdown.load(std::memory_order_acquire)) {
+            return;
+        }
+        
         double mid = (bt.bid + bt.ask) / 2.0;
-        std::cout<<"price: "<<mid<<std::endl;
-        // VERIFICATION 
-        std::cout << "[DEBUG] Received Price: " << mid  << std::endl;
-        if (mid != last_sent_price_) {
-            pending_price_ = mid;
+        spdlog::info("price: {}", mid);
+        // VERIFICATION
+        spdlog::debug("Received Price: {}", mid);
+        double last = last_sent_price_.load(std::memory_order_acquire);
+        if (std::abs(mid - last) > 0.0000001) {
+            pending_price_.store(mid, std::memory_order_release);
             order_pending_.store(true, std::memory_order_release);
-            std::cout << "[DEBUG] Mid changed from " <<last_sent_price_<<" to "<< mid << std::endl;
+            spdlog::debug("Mid changed from {} to {}", last, mid);
         }
     }
 
 private:
-    double& pending_price_;
-    double& last_sent_price_;
+    std::atomic<double>& pending_price_;
+    std::atomic<double>& last_sent_price_;
     std::atomic<bool>& order_pending_;
 };
 
@@ -58,19 +74,19 @@ create_executor(const Config& cfg)
 
 // Execution loop
 void run_execution_loop(OrderExecutor& executor,
-                        double& pending_price,
-                        double& last_sent_price,
+                        std::atomic<double>& pending_price,
+                        std::atomic<double>& last_sent_price,
                         std::atomic<bool>& order_pending,
                         std::atomic<bool>& order_in_flight,
                         double quantity)
 {
-    while (true) {
+    while (!g_shutdown.load(std::memory_order_acquire)) {
         if (!order_pending.exchange(false, std::memory_order_acquire)) {
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
             continue;
         }
         if (order_in_flight.exchange(true)) {
-            std::cout << "[DEBUG] Order skipped: Another order is already in-flight." << std::endl;
+            spdlog::debug("Order skipped: Another order is already in-flight.");
             continue;
         }
 
@@ -81,22 +97,32 @@ void run_execution_loop(OrderExecutor& executor,
         } reset{order_in_flight};
 
         try {
-           std::cout << "[DEBUG] Calling place_order for " << quantity << " units..." << std::endl;
-            executor.place_order(pending_price, quantity);
-            last_sent_price = pending_price;
-            std::cout << "[DEBUG] place_order call finished." << std::endl;
+           spdlog::debug("Calling place_order for {} units...", quantity);
+            double price = pending_price.load(std::memory_order_acquire);
+            executor.place_order(price, quantity);
+            last_sent_price.store(price, std::memory_order_release);
+            spdlog::debug("place_order call finished.");
         }
         catch (const std::exception& e) {
-            std::cerr << "[ERROR] " << e.what() << std::endl;
+            spdlog::error("{}", e.what());
         }
     }
+    spdlog::info("Execution loop shutting down...");
 }
 
 // Entry point
 int main(int argc, char* argv[])
 {
+    // Initialize spdlog
+    spdlog::set_level(spdlog::level::debug);
+    spdlog::set_pattern("[%Y-%m-%d %H:%M:%S.%e] [%l] [%s:%#] %v");
+
+    // Setup signal handlers
+    std::signal(SIGINT, signal_handler);
+    std::signal(SIGTERM, signal_handler);
+
     if (argc < 2) {
-        std::cerr << "Usage: ./bot <config.json>\n";
+        spdlog::error("Usage: ./bot <config.json>");
         return 1;
     }
     //Config parser
@@ -105,8 +131,8 @@ int main(int argc, char* argv[])
     //Order Executor (
     auto executor = create_executor(cfg);
 
-    double pending_price = 0.0;
-    double last_sent_price = 0.0;
+    std::atomic<double> pending_price{0.0};
+    std::atomic<double> last_sent_price{0.0};
     std::atomic<bool> order_pending{false};
     std::atomic<bool> order_in_flight{false};
 
@@ -128,6 +154,12 @@ int main(int argc, char* argv[])
                         order_in_flight,
                         cfg.quantity);
 
-    market_data_thread.join();
+    // Shutdown sequence
+    spdlog::info("Waiting for market data thread to finish...");
+    ws.request_stop();
+    if (market_data_thread.joinable()) {
+        market_data_thread.join();
+    }
+    spdlog::info("Shutdown complete");
     return 0;
 }

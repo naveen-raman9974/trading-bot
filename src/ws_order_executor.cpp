@@ -5,6 +5,7 @@
 #include <sstream>
 #include <openssl/hmac.h>
 #include <chrono>
+#include <spdlog/spdlog.h>
 
 namespace beast = boost::beast;
 namespace websocket = beast::websocket;
@@ -20,6 +21,8 @@ WsOrderExecutor::WsOrderExecutor(std::string api_key, std::string api_secret, st
 }
 
 WsOrderExecutor::~WsOrderExecutor() {
+    request_stop();
+    
     // Close socket
     boost::system::error_code ec;
     beast::get_lowest_layer(ws_).close(ec);
@@ -50,7 +53,7 @@ void WsOrderExecutor::connect() {
         ws_.next_layer().handshake(net::ssl::stream_base::client);
         ws_.handshake(host, "/v4/ws/spot");
 
-        std::cout << "[WS-ORDER] Socket connected. Sending login" << std::endl;
+        spdlog::info("[WS-ORDER] Socket connected. Sending login");
 
     //Reader loop in different thread    
     logged_in_ = false;
@@ -61,13 +64,13 @@ void WsOrderExecutor::connect() {
 
     //We wait for logged_in flag to be true in reader loop
     if (cv_.wait_for(lock, std::chrono::seconds(5), [this] { return logged_in_.load(); })) {
-        std::cout << "[WS-ORDER] Authentication confirmed!" << std::endl;
+        spdlog::info("[WS-ORDER] Authentication confirmed!");
     } else {
-        std::cout << "[ERROR] Login failed" << std::endl;
+        spdlog::error("[WS-ORDER] Login failed");
     }
 }
      catch (const std::exception& e) {
-        std::cerr << "[WS-ORDER] Connection error: " << e.what() << std::endl;
+        spdlog::error("[WS-ORDER] Connection error: {}", e.what());
     }
 }
 
@@ -110,7 +113,7 @@ void WsOrderExecutor::send_login() {
 
     std::lock_guard<std::mutex> lock(ws_mtx_);
     ws_.write(boost::asio::buffer(login_msg.dump()));
-    std::cout << "[WS-ORDER] Login request sent. Payload: " << login_msg.dump() << std::endl;
+    spdlog::debug("[WS-ORDER] Login request sent. Payload: {}", login_msg.dump());
 }
 
 void WsOrderExecutor::place_order(double price, double quantity) {
@@ -142,18 +145,28 @@ void WsOrderExecutor::place_order(double price, double quantity) {
     try {
         std::lock_guard<std::mutex> lock(ws_mtx_);
         ws_.write(boost::asio::buffer(order_msg.dump()));
-        std::cout << "[WS-ORDER] Order Sent: " << ss_q.str() << " at " << ss_p.str() << std::endl;
+        spdlog::info("[WS-ORDER] Order Sent: {} at {}", ss_q.str(), ss_p.str());
     } catch (const std::exception& e) {
-        std::cerr << "[WS-ORDER] Order Send Error: " << e.what() << std::endl;
+        spdlog::error("[WS-ORDER] Order Send Error: {}", e.what());
     }
 }
 
 void WsOrderExecutor::reader_loop() {
     beast::flat_buffer buffer;
     try {
-        while (true) {
+        while (!stop_requested_.load(std::memory_order_acquire)) {
             buffer.clear();
-            ws_.read(buffer);
+            
+            boost::system::error_code ec;
+            ws_.read(buffer, ec);
+            
+            if (ec) {
+                if (stop_requested_.load(std::memory_order_acquire)) {
+                    break;
+                }
+                throw beast::system_error(ec);
+            }
+            
             std::string msg = beast::buffers_to_string(buffer.data());
             
             auto j = nlohmann::json::parse(msg, nullptr, false);
@@ -167,7 +180,7 @@ void WsOrderExecutor::reader_loop() {
 
             if (channel == "spot.login") {
                 if (j["header"]["status"] == "200" || j["header"]["status"] == 200) {
-                    std::cout << "[WS-ORDER] Authentication SUCCESS." << std::endl;
+                    spdlog::info("[WS-ORDER] Authentication SUCCESS.");
                     {
                         std::lock_guard<std::mutex> lock(mtx_);
                         logged_in_ = true;
@@ -176,7 +189,7 @@ void WsOrderExecutor::reader_loop() {
                 }
             } 
             else if (channel == "spot.order_place") {
-                std::cout << "[ORDER RESULT]: " << msg << std::endl;
+                spdlog::info("[ORDER RESULT]: {}", msg);
                 // You can add logic here to notify your strategy that the trade is done
             }
             else if (channel == "spot.pong") {
@@ -184,11 +197,11 @@ void WsOrderExecutor::reader_loop() {
             }
             else {
                 // Print unknown messages for debugging
-                std::cout << "[WS-ORDER RECV]: " << msg << std::endl;
+                spdlog::debug("[WS-ORDER RECV]: {}", msg);
             }
         }
     } catch (const std::exception& e) {
-        std::cerr << "[WS-ORDER] Reader Error: " << e.what() << std::endl;
+        spdlog::error("[WS-ORDER] Reader Error: {}", e.what());
         logged_in_ = false;
     }
 }
