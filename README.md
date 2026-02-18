@@ -1,4 +1,4 @@
-Configuration
+# Configuration
 config.json format:
 {
 "symbol": "BTC_USDT",
@@ -9,11 +9,12 @@ config.json format:
 "settle": "usdt"
 }
 
-Building and running the application
-(present in startup.sh)
+# Building and running the application(present in startup.sh)
+
+- Also load environment variables from .env file
+
 #!/bin/bash
 
-# Load environment variables from .env file
 if [ -f .env ]; then
     set -a
     source .env
